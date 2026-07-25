@@ -1,21 +1,25 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Universal Firebase Data Extractor</title>
+  <title>Universal Firebase & Analytics ID Extractor</title>
   <style>
     body { font-family: Arial, sans-serif; padding: 20px; }
-    textarea { width: 100%; height: 180px; font-family: monospace; }
+    textarea { width: 100%; height: 120px; font-family: monospace; }
     button { margin: 8px 4px 8px 0; padding: 8px 18px; cursor: pointer; }
     pre { white-space: pre-wrap; background: #f4f4f4; padding: 12px; border-radius: 8px; overflow: auto; max-height: 400px; border: 1px solid #ccc; }
-    .section { margin-top: 25px; }
+    .section { margin-top: 25px; border-top: 2px solid #ddd; padding-top: 15px; }
     #status { color: green; font-weight: bold; margin: 10px 0; }
     .hidden { display: none; }
+    .note { font-size: 0.9em; color: #666; margin-top: -5px; }
   </style>
 </head>
 <body>
-  <h1>🌐 Universal Firebase Extractor</h1>
-  <p>Paste any Firebase web config object (the whole <code>firebaseConfig</code> block). Then click <strong>Connect</strong>.</p>
-  <textarea id="configInput" placeholder='Paste your firebaseConfig here, e.g.:
+  <h1>🌐 Universal Data Extractor</h1>
+  
+  <div class="section">
+    <h2>🔌 Firebase Config Input</h2>
+    <p>Paste any Firebase web config object (the whole <code>firebaseConfig</code> block). Then click <strong>Connect</strong>.</p>
+    <textarea id="configInput" placeholder='Paste your firebaseConfig here, e.g.:
 {
   apiKey: "AIza...",
   authDomain: "my-project.firebaseapp.com",
@@ -24,12 +28,12 @@
   messagingSenderId: "123...",
   appId: "1:..."
 }'></textarea>
-  <br/>
-  <button id="connectBtn">🔌 Connect & Initialize</button>
-  <div id="status"></div>
+    <br/>
+    <button id="connectBtn">🔌 Connect & Initialize</button>
+    <div id="status"></div>
+  </div>
 
   <div id="extractionPanel" class="hidden">
-    <hr/>
     <div class="section">
       <h2>🔁 Realtime Database</h2>
       <button id="reloadRTDB">Reload RTDB</button>
@@ -52,31 +56,21 @@
     </div>
   </div>
 
+  <!-- Google Analytics ID Extractor (works without Firebase) -->
+  <div class="section">
+    <h2>📊 Google Analytics ID Extractor</h2>
+    <p>Paste any Google Analytics / gtag / GTM snippet or code chunk – it will find and list all measurement / tracking IDs.</p>
+    <textarea id="gaSnippetInput" placeholder="Paste your GA snippet, e.g.:
+gtag('config', 'G-ABC123DEF');
+or UA-12345678-1"></textarea>
+    <br/>
+    <button id="extractGAIds">🔍 Extract Tracking IDs</button>
+    <pre id="gaOutput">IDs will appear here.</pre>
+    <p class="note">⚠️ This only extracts the IDs, not actual analytics data. Fetching reports requires a server-side API call and OAuth.</p>
+  </div>
+
   <script type="module">
-    // --- Global state ---
-    let app = null;               // Firebase app instance
-    let rtdb = null;
-    let firestore = null;
-    let storage = null;
-    let projectId = null;
-    let apiKey = null;
-
-    // Data holders
-    let rtdbData = null;
-    let firestoreAllData = null;
-    let storageAllData = null;
-
-    // --- UI elements ---
-    const configInput = document.getElementById("configInput");
-    const connectBtn = document.getElementById("connectBtn");
-    const statusDiv = document.getElementById("status");
-    const extractionPanel = document.getElementById("extractionPanel");
-
-    const rtdbOutput = document.getElementById("rtdbOutput");
-    const firestoreOutput = document.getElementById("firestoreOutput");
-    const storageOutput = document.getElementById("storageOutput");
-
-    // --- Dynamic imports ---
+    // ---------------- Firebase Modules ----------------
     let firebaseAppModule, firebaseDatabaseModule, firebaseFirestoreModule, firebaseStorageModule;
     async function loadFirebaseModules() {
       const [appMod, dbMod, fsMod, stMod] = await Promise.all([
@@ -91,25 +85,35 @@
       firebaseStorageModule = stMod;
     }
 
-    // Parse the pasted config string (could be a JS object literal with or without trailing commas)
+    // ---------------- Global State ----------------
+    let app = null, rtdb = null, firestore = null, storage = null;
+    let projectId = null, apiKey = null;
+    let rtdbData = null, firestoreAllData = null, storageAllData = null;
+
+    // UI elements
+    const configInput = document.getElementById("configInput");
+    const connectBtn = document.getElementById("connectBtn");
+    const statusDiv = document.getElementById("status");
+    const extractionPanel = document.getElementById("extractionPanel");
+
+    const rtdbOutput = document.getElementById("rtdbOutput");
+    const firestoreOutput = document.getElementById("firestoreOutput");
+    const storageOutput = document.getElementById("storageOutput");
+
+    // ---------------- Parse Firebase Config ----------------
     function parseConfig(str) {
-      // Try to evaluate as JavaScript object literal
-      // We wrap in parentheses and use eval (safe because it's user input about their own Firebase project)
       try {
-        const cleaned = str.trim().replace(/^const\s+\w+\s*=\s*/, '').replace(/;$/, ''); // remove 'const something =' if any
+        const cleaned = str.trim().replace(/^const\s+\w+\s*=\s*/, '').replace(/;$/, '');
         const config = eval('(' + cleaned + ')');
         if (typeof config !== 'object' || config === null) throw new Error("Not an object");
-        // required minimal fields
-        if (!config.apiKey || !config.projectId) {
-          throw new Error("Config missing apiKey or projectId");
-        }
+        if (!config.apiKey || !config.projectId) throw new Error("Missing apiKey or projectId");
         return config;
       } catch (e) {
         throw new Error("Invalid config format: " + e.message);
       }
     }
 
-    // Connect button
+    // ---------------- Connect Button ----------------
     connectBtn.addEventListener("click", async () => {
       statusDiv.textContent = "Loading Firebase modules...";
       try {
@@ -121,15 +125,12 @@
         projectId = config.projectId;
         apiKey = config.apiKey;
 
-        // Initialize app (destroy previous if any)
+        const appName = "extractor_" + Date.now();
         if (app) {
-          // Can't easily delete an app in v9 modular, but we can reinitialize with a new name
-          // For simplicity, we'll just create a new app instance (old one remains but we ignore)
-          // Firefox might complain about multiple apps; better to use a unique name each time.
-          const appName = "extractor_" + Date.now();
+          // Reinitialize new app
           app = firebaseAppModule.initializeApp(config, appName);
         } else {
-          app = firebaseAppModule.initializeApp(config);
+          app = firebaseAppModule.initializeApp(config, appName);
         }
 
         rtdb = firebaseDatabaseModule.getDatabase(app);
@@ -139,7 +140,6 @@
         statusDiv.textContent = `✅ Connected to project: ${projectId}`;
         extractionPanel.classList.remove("hidden");
 
-        // Reset outputs
         rtdbOutput.textContent = "Connected. Click 'Reload RTDB' to fetch data.";
         firestoreOutput.textContent = "Connected. Click the extract button.";
         storageOutput.textContent = "Connected. Click to list files.";
@@ -149,7 +149,7 @@
       }
     });
 
-    // ------------------- Realtime Database -------------------
+    // ---------------- Realtime Database ----------------
     async function loadRTDB() {
       rtdbOutput.textContent = "Fetching Realtime Database...";
       try {
@@ -167,7 +167,6 @@
         rtdbData = null;
       }
     }
-
     document.getElementById("reloadRTDB").addEventListener("click", loadRTDB);
     document.getElementById("downloadRTDB").addEventListener("click", () => {
       if (!rtdbData) return alert("No RTDB data.");
@@ -178,7 +177,7 @@
       a.click();
     });
 
-    // ------------------- Firestore (recursive) -------------------
+    // ---------------- Firestore (recursive) ----------------
     async function listSubcollectionIds(docPath) {
       const base = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents`;
       const url = `${base}/${docPath}:listCollectionIds?key=${apiKey}`;
@@ -200,28 +199,21 @@
       const colRef = collection(firestore, ...collectionPath.split('/'));
       const snapshot = await getDocs(colRef);
       const docs = {};
-      snapshot.forEach(doc => {
-        docs[doc.id] = doc.data();
-      });
+      snapshot.forEach(doc => { docs[doc.id] = doc.data(); });
       return docs;
     }
 
     async function recursiveFirestore(path = "") {
       const tree = { _docs: {}, subCollections: {} };
-      try {
-        tree._docs = await fetchCollectionDocs(path);
-      } catch (err) {
-        tree._docs = { _error: err.message };
-      }
+      try { tree._docs = await fetchCollectionDocs(path); } 
+      catch (err) { tree._docs = { _error: err.message }; }
+
       const docIds = Object.keys(tree._docs).filter(id => id !== '_error');
       for (const docId of docIds) {
         const fullDocPath = path ? `${path}/${docId}` : docId;
         let subCols = [];
-        try {
-          subCols = await listSubcollectionIds(fullDocPath);
-        } catch (err) {
-          console.warn("Cannot list subcollections for " + fullDocPath, err);
-        }
+        try { subCols = await listSubcollectionIds(fullDocPath); } 
+        catch (err) { console.warn("Cannot list subcollections for " + fullDocPath, err); }
         for (const subCol of subCols) {
           const subPath = `${fullDocPath}/${subCol}`;
           tree.subCollections[subCol] = await recursiveFirestore(subPath);
@@ -231,7 +223,7 @@
     }
 
     async function fetchAllFirestoreRecursive() {
-      firestoreOutput.textContent = "Listing root Firestore collections via REST API...";
+      firestoreOutput.textContent = "Listing root Firestore collections...";
       let rootColIds = [];
       try {
         const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:listCollectionIds?key=${apiKey}`;
@@ -271,7 +263,7 @@
       a.click();
     });
 
-    // ------------------- Cloud Storage -------------------
+    // ---------------- Cloud Storage ----------------
     async function listAllFilesRecursive(prefixRef) {
       const { listAll, getDownloadURL } = firebaseStorageModule;
       const result = [];
@@ -314,7 +306,43 @@
       a.click();
     });
 
-    // Load modules on page load for convenience
+    // ---------------- Google Analytics ID Extraction (no Firebase needed) ----------------
+    document.getElementById("extractGAIds").addEventListener("click", () => {
+      const snippet = document.getElementById("gaSnippetInput").value;
+      const output = document.getElementById("gaOutput");
+      if (!snippet.trim()) {
+        output.textContent = "Please paste a snippet first.";
+        return;
+      }
+
+      // Patterns for common Google Analytics / Ads / Tag Manager IDs
+      const patterns = [
+        /G-[A-Z0-9]{10,}/gi,       // GA4 measurement ID
+        /UA-\d{4,}-\d{1,}/gi,      // Universal Analytics
+        /AW-\d{3,}/gi,             // Google Ads conversion ID
+        /GTM-[A-Z0-9]{4,}/gi,      // Google Tag Manager
+        /YT-[A-Z0-9]{4,}/gi        // YouTube analytics? sometimes seen
+      ];
+
+      let foundIds = [];
+      for (const pattern of patterns) {
+        const matches = snippet.match(pattern);
+        if (matches) {
+          foundIds.push(...matches.map(id => id.toUpperCase()));
+        }
+      }
+
+      // Remove duplicates
+      foundIds = [...new Set(foundIds)];
+
+      if (foundIds.length === 0) {
+        output.textContent = "No Google Analytics / tracking IDs found in the snippet.";
+      } else {
+        output.textContent = "Found tracking IDs:\n" + foundIds.join("\n");
+      }
+    });
+
+    // Preload modules
     loadFirebaseModules();
   </script>
 </body>
